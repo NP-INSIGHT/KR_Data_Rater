@@ -1,0 +1,87 @@
+name: Notion Daily Analysis
+
+on:
+  schedule:
+    - cron: '0 8 * * 1-5'   # UTC 08:00 = KST 17:00 (장 마감 후)
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'LLM provider'
+        default: 'gemini'
+        type: choice
+        options:
+          - claude
+          - gemini
+      list:
+        description: 'Filter by list name (empty = all stocks)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - run: pip install -r requirements.txt
+
+      - name: Install Korean font
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-nanum
+          fc-cache -fv
+
+      - name: Run analysis (dry-run, no Notion write yet)
+        env:
+          MPLBACKEND: Agg
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+        run: |
+          LIST="${{ inputs.list }}"
+          PROVIDER="${{ inputs.provider || 'gemini' }}"
+          if [ -n "$LIST" ]; then
+            python run_notion.py --provider "$PROVIDER" --list "$LIST" --dry-run
+          else
+            python run_notion.py --provider "$PROVIDER" --dry-run
+          fi
+
+      - name: Commit charts to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f charts/ results/
+          git diff --staged --quiet || git commit -m "chore: update charts $(date +%Y-%m-%d)"
+          git pull --rebase origin main || git rebase --abort
+          git push
+
+      - name: Write Notion report (charts now available on GitHub)
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          LIST="${{ inputs.list }}"
+          PROVIDER="${{ inputs.provider || 'gemini' }}"
+          if [ -n "$LIST" ]; then
+            python run_notion.py --provider "$PROVIDER" --list "$LIST" --report-only
+          else
+            python run_notion.py --provider "$PROVIDER" --report-only
+          fi
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7

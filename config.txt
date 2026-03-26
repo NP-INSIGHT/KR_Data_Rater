@@ -1,0 +1,31 @@
+# KR Data Rater settings
+
+# LLM Provider: claude / gemini
+LLM_PROVIDER=gemini
+
+# Claude model
+CLAUDE_MODEL=claude-sonnet-4-6
+
+# Gemini model
+GEMINI_MODEL=gemini-3.1-pro-preview
+
+# Data settings
+DATA_PERIOD=1y
+DATA_DAYS_FOR_LLM=60
+CHART_MA_LINES=5,20,60,120
+
+# Chart (for reports only)
+SAVE_CHARTS=true
+
+# Consensus settings
+CONSENSUS_RUNS=3
+CONFIDENCE_THRESHOLD=0
+MIN_CONSENSUS_AGREEMENT=2
+LLM_TEMPERATURE=0
+
+# Notion
+NOTION_WATCHLIST_DB=3280f0d18c5a80f9a01ff29099882e1c
+NOTION_REPORT_DB=3280f0d18c5a8041b28ed8be7b1e8f22
+
+# GitHub (chart image URLs for Notion)
+GITHUB_REPO=NP-INSIGHT/KR_Data_Rater
