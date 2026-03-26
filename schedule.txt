@@ -6,8 +6,8 @@
 # Format: NAME | cron (UTC) | KST | parameters
 # -----------------------------------------------
 
-# KR_Data_Rater (this repo)
+# KR_Chart_Rater (image-based)
 NOTION_ANALYSIS | 0 8 * * 1-5 | KST 17:00 | provider=gemini
 
-# KR_Chart_Rater (separate repo)
+# KR_Data_Rater (data-based, this repo)
 NOTION_ANALYSIS | 30 8 * * 1-5 | KST 17:30 | provider=gemini

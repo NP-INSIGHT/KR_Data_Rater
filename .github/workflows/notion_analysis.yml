@@ -2,7 +2,7 @@ name: Notion Daily Analysis
 
 on:
   schedule:
-    - cron: '0 8 * * 1-5'   # UTC 08:00 = KST 17:00 (장 마감 후)
+    - cron: '30 8 * * 1-5'  # UTC 08:30 = KST 17:30 (Chart Rater 30분 후)
   workflow_dispatch:
     inputs:
       provider:
