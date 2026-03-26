@@ -4,7 +4,6 @@ __pycache__/
 logs/
 *.log
 .env
-ticker_cache.json
 theme_cache.json
 results/*.json
 results/*.docx
