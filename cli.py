@@ -24,10 +24,18 @@ def cmd_stocks(args):
         print("--tickers 또는 --watchlist를 지정하세요.")
         return 1
 
+    # Multi-temperature 결정
+    if args.temperatures:
+        temperatures = args.temperatures
+    elif args.multi_temp or engine.MULTI_TEMP_ENABLED:
+        temperatures = engine.MULTI_TEMPERATURES
+    else:
+        temperatures = None
+
     def log(msg):
         print(msg, flush=True)
 
-    result = engine.run_stock_analysis(names, provider, log_callback=log)
+    result = engine.run_stock_analysis(names, provider, log_callback=log, temperatures=temperatures)
 
     # Word 보고서 생성
     if result.get("a_rated"):
@@ -79,6 +87,8 @@ def main():
     p_stocks.add_argument("--watchlist", action="store_true", help="워치리스트 종목 분석")
     p_stocks.add_argument("--list", default=None, help="워치리스트 이름")
     p_stocks.add_argument("--provider", choices=["claude", "gemini"], help="LLM provider")
+    p_stocks.add_argument("--multi-temp", action="store_true", help="Multi-temperature analysis (config values)")
+    p_stocks.add_argument("--temperatures", nargs="+", type=float, help="Temperature values (e.g. 0 0.3 0.7)")
 
     # watchlist
     p_wl = sub.add_parser("watchlist", help="워치리스트 관리")

@@ -1184,23 +1184,26 @@ def _call_with_retry(fn, *args, max_retries=3, **kwargs):
                 raise
 
 
-def analyze_data_with_llm(data_text, ticker_name, provider=None):
+def analyze_data_with_llm(data_text, ticker_name, provider=None, temperature=None):
     """
     텍스트 데이터를 LLM에 보내 기술적 분석 수행.
     data_text: prepare_analysis_data()의 반환값
+    temperature: LLM temperature (None이면 config 기본값 사용)
     Returns: 분석 결과 dict (grade, confidence, trend, signals, ...)
     """
     if provider is None:
         provider = LLM_PROVIDER
+
+    temp = temperature if temperature is not None else LLM_TEMPERATURE
 
     system_prompt = load_data_prompt()
     user_msg = data_text + "\n\n분석 시작해."
 
     # LLM 호출 (retry 적용) — 텍스트 전용, 이미지 없음
     if provider == "claude":
-        raw_response, usage = _call_with_retry(_analyze_text_with_claude, user_msg, system_prompt)
+        raw_response, usage = _call_with_retry(_analyze_text_with_claude, user_msg, system_prompt, temp)
     elif provider == "gemini":
-        raw_response, usage = _call_with_retry(_analyze_text_with_gemini, user_msg, system_prompt)
+        raw_response, usage = _call_with_retry(_analyze_text_with_gemini, user_msg, system_prompt, temp)
     else:
         raise ValueError(f"지원하지 않는 LLM provider: {provider}")
 
@@ -1208,6 +1211,7 @@ def analyze_data_with_llm(data_text, ticker_name, provider=None):
     result = _parse_llm_response(raw_response)
     result["ticker_name"] = ticker_name
     result["token_usage"] = usage
+    result["temperature"] = temp
     return result
 
 
@@ -1217,10 +1221,15 @@ CONFIDENCE_THRESHOLD = int(CONFIG.get("CONFIDENCE_THRESHOLD", "70"))
 MIN_CONSENSUS_AGREEMENT = int(CONFIG.get("MIN_CONSENSUS_AGREEMENT", "2"))
 LLM_TEMPERATURE = float(CONFIG.get("LLM_TEMPERATURE", "1.0"))
 
+# Multi-temperature 설정
+MULTI_TEMP_ENABLED = CONFIG.get("MULTI_TEMP_ENABLED", "false").lower() == "true"
+MULTI_TEMPERATURES = [float(t.strip()) for t in CONFIG.get("MULTI_TEMPERATURES", "0,0.3,0.7").split(",")]
 
-def analyze_with_consensus(data_text, ticker_name, provider=None, n_runs=None):
+
+def analyze_with_consensus(data_text, ticker_name, provider=None, n_runs=None, temperature=None):
     """
     동일 데이터를 N번 독립 분석하여 합의된 결과만 반환.
+    temperature: LLM temperature (None이면 config 기본값 사용)
     Returns: 합의 결과 dict (consensus_grade, consensus_confidence, consensus_count 등 포함)
     """
     if n_runs is None:
@@ -1234,7 +1243,7 @@ def analyze_with_consensus(data_text, ticker_name, provider=None, n_runs=None):
 
     for i in range(n_runs):
         try:
-            result = analyze_data_with_llm(data_text, ticker_name, provider)
+            result = analyze_data_with_llm(data_text, ticker_name, provider, temperature=temperature)
             runs.append(result)
             grade = result.get("grade", "N/A")
             conf = result.get("confidence", 0)
@@ -1304,17 +1313,44 @@ def analyze_with_consensus(data_text, ticker_name, provider=None, n_runs=None):
     return best_run
 
 
-def _analyze_text_with_claude(user_msg, system_prompt):
+def analyze_multi_temperature(data_text, ticker_name, provider=None, temperatures=None):
+    """
+    동일 종목을 여러 temperature로 분석하여 결과를 비교.
+    temperatures: temperature 리스트 (None이면 config의 MULTI_TEMPERATURES 사용)
+    Returns: list of (temperature, result) tuples
+    """
+    if temperatures is None:
+        temperatures = MULTI_TEMPERATURES
+
+    results = []
+    for temp in temperatures:
+        try:
+            result = analyze_with_consensus(
+                data_text=data_text,
+                ticker_name=ticker_name,
+                provider=provider,
+                temperature=temp,
+            )
+            result["temperature"] = temp
+            results.append((temp, result))
+            logger.info(f"  [temp={temp}] {result.get('grade', 'N/A')} (신뢰도: {result.get('reliability', '')})")
+        except Exception as e:
+            logger.warning(f"  [temp={temp}] 분석 실패: {e}")
+    return results
+
+
+def _analyze_text_with_claude(user_msg, system_prompt, temperature=None):
     """Claude API로 텍스트 기반 분석. Returns: (text, usage_dict)"""
     import anthropic
 
+    temp = temperature if temperature is not None else LLM_TEMPERATURE
     api_key = read_secret("anthropic_api_key.txt")
     client = anthropic.Anthropic(api_key=api_key)
 
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=4096,
-        temperature=LLM_TEMPERATURE,
+        temperature=temp,
         system=system_prompt,
         messages=[{
             "role": "user",
@@ -1328,17 +1364,18 @@ def _analyze_text_with_claude(user_msg, system_prompt):
     return response.content[0].text, usage
 
 
-def _analyze_text_with_gemini(user_msg, system_prompt):
+def _analyze_text_with_gemini(user_msg, system_prompt, temperature=None):
     """Gemini API로 텍스트 기반 분석. Returns: (text, usage_dict)"""
     from google import genai
     from google.genai import types
 
+    temp = temperature if temperature is not None else LLM_TEMPERATURE
     api_key = read_secret("gemini_api_key.txt")
     client = genai.Client(api_key=api_key)
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
-        config=types.GenerateContentConfig(system_instruction=system_prompt, temperature=LLM_TEMPERATURE),
+        config=types.GenerateContentConfig(system_instruction=system_prompt, temperature=temp),
         contents=[user_msg],
     )
 
@@ -1427,9 +1464,10 @@ def _parse_llm_response(raw_text):
 # ============================================================
 # 분석 파이프라인 (Feature 1: 종목 분석)
 # ============================================================
-def run_stock_analysis(ticker_names, provider=None, log_callback=None):
+def run_stock_analysis(ticker_names, provider=None, log_callback=None, temperatures=None):
     """
     종목 리스트에 대해 데이터 기반 기술적 분석 수행.
+    temperatures: multi-temp 모드 시 temperature 리스트 (None이면 단일 분석)
     Returns: {results: list, a_rated: list, summary: str}
     """
     if provider is None:
@@ -1473,42 +1511,77 @@ def run_stock_analysis(ticker_names, provider=None, log_callback=None):
             data_text = prepare_analysis_data(df, name, code)
 
             # 4. LLM 합의 분석
-            log(f"  → LLM 합의 분석 중 ({provider}, {CONSENSUS_RUNS}회)...")
-            start_time = time.time()
-            analysis = analyze_with_consensus(data_text, name, provider)
-            elapsed = time.time() - start_time
-            usage = analysis.get("token_usage", {})
-            reliability = analysis.get("reliability", "")
-            consensus_count = analysis.get("consensus_count", "")
-            grade_dist = analysis.get("grade_distribution", {})
-            dist_str = " / ".join(f"{g}:{c}" for g, c in sorted(grade_dist.items()))
-            if usage:
-                cost_usd = usage["total_cost_usd"]
-                cost_krw = cost_usd * 1400
-                cost_str = f" | ${cost_usd:.4f} ({cost_krw:.0f}원)"
-            else:
-                cost_str = ""
-            log(f"  [분석] {analysis.get('grade', 'N/A')} | 신뢰도: {reliability} | {consensus_count} | 분포: {dist_str}{cost_str}")
-            if usage:
-                _accumulate_usage(total_usage, usage)
+            if temperatures:
+                # Multi-temperature 모드
+                log(f"  → Multi-temp 분석 ({provider}, temps={temperatures})...")
+                start_time = time.time()
+                multi_results = analyze_multi_temperature(data_text, name, provider, temperatures)
+                elapsed = time.time() - start_time
+
+                # 보고서용 차트 생성 (1회만)
+                chart_path = None
+                if SAVE_CHARTS:
+                    log(f"  → 보고서용 차트 생성 중...")
+                    chart_path = generate_chart(name, df, code, market=market)
+                    log(f"  [차트] {chart_path.name}")
+
+                for temp, analysis in multi_results:
+                    usage = analysis.get("token_usage", {})
+                    reliability = analysis.get("reliability", "")
+                    grade = analysis.get("grade", "N/A")
+                    log(f"  [temp={temp}] {grade} | 신뢰도: {reliability}")
+                    if usage:
+                        _accumulate_usage(total_usage, usage)
+
+                    analysis["chart_path"] = str(chart_path) if chart_path else ""
+                    analysis["yf_ticker"] = yf_ticker
+                    analysis["code"] = code
+                    analysis["market"] = market
+                    analysis["last_close"] = int(df["Close"].iloc[-1])
+                    results.append(analysis)
+
                 cum_usd = total_usage["total_cost_usd"]
                 cum_krw = cum_usd * 1400
                 log(f"  [누적 비용] ${cum_usd:.4f} ({cum_krw:.0f}원)")
+                log(f"  [OK] {name} 완료 ({len(multi_results)} temps)")
+            else:
+                # 단일 temperature 모드
+                log(f"  → LLM 합의 분석 중 ({provider}, {CONSENSUS_RUNS}회)...")
+                start_time = time.time()
+                analysis = analyze_with_consensus(data_text, name, provider)
+                elapsed = time.time() - start_time
+                usage = analysis.get("token_usage", {})
+                reliability = analysis.get("reliability", "")
+                consensus_count = analysis.get("consensus_count", "")
+                grade_dist = analysis.get("grade_distribution", {})
+                dist_str = " / ".join(f"{g}:{c}" for g, c in sorted(grade_dist.items()))
+                if usage:
+                    cost_usd = usage["total_cost_usd"]
+                    cost_krw = cost_usd * 1400
+                    cost_str = f" | ${cost_usd:.4f} ({cost_krw:.0f}원)"
+                else:
+                    cost_str = ""
+                log(f"  [분석] {analysis.get('grade', 'N/A')} | 신뢰도: {reliability} | {consensus_count} | 분포: {dist_str}{cost_str}")
+                if usage:
+                    _accumulate_usage(total_usage, usage)
+                    cum_usd = total_usage["total_cost_usd"]
+                    cum_krw = cum_usd * 1400
+                    log(f"  [누적 비용] ${cum_usd:.4f} ({cum_krw:.0f}원)")
 
-            # 5. 보고서용 차트 생성 (분석 후)
-            chart_path = None
-            if SAVE_CHARTS:
-                log(f"  → 보고서용 차트 생성 중...")
-                chart_path = generate_chart(name, df, code, market=market)
-                log(f"  [차트] {chart_path.name}")
+                # 5. 보고서용 차트 생성 (분석 후)
+                chart_path = None
+                if SAVE_CHARTS:
+                    log(f"  → 보고서용 차트 생성 중...")
+                    chart_path = generate_chart(name, df, code, market=market)
+                    log(f"  [차트] {chart_path.name}")
 
-            analysis["chart_path"] = str(chart_path) if chart_path else ""
-            analysis["yf_ticker"] = yf_ticker
-            analysis["code"] = code
-            analysis["market"] = market
-            analysis["last_close"] = int(df["Close"].iloc[-1])
-            results.append(analysis)
-            log(f"  [OK] {name} 완료")
+                analysis["chart_path"] = str(chart_path) if chart_path else ""
+                analysis["yf_ticker"] = yf_ticker
+                analysis["code"] = code
+                analysis["market"] = market
+                analysis["last_close"] = int(df["Close"].iloc[-1])
+                results.append(analysis)
+                log(f"  [OK] {name} 완료")
 
         except Exception as e:
             error_msg = f"{name}: {e}"

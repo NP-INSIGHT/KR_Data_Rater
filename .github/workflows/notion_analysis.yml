@@ -16,6 +16,14 @@ on:
         description: 'Filter by list name (empty = all stocks)'
         required: false
         default: ''
+      multi_temp:
+        description: 'Enable multi-temperature analysis'
+        type: boolean
+        default: false
+      temperatures:
+        description: 'Temperature values (comma-separated, e.g. 0,0.3,0.7)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -49,11 +57,19 @@ jobs:
         run: |
           LIST="${{ inputs.list }}"
           PROVIDER="${{ inputs.provider || 'gemini' }}"
+          MULTI_TEMP="${{ inputs.multi_temp }}"
+          TEMPS="${{ inputs.temperatures }}"
+          CMD="python run_notion.py --provider $PROVIDER --dry-run"
           if [ -n "$LIST" ]; then
-            python run_notion.py --provider "$PROVIDER" --list "$LIST" --dry-run
-          else
-            python run_notion.py --provider "$PROVIDER" --dry-run
+            CMD="$CMD --list $LIST"
           fi
+          if [ "$MULTI_TEMP" = "true" ]; then
+            CMD="$CMD --multi-temp"
+          fi
+          if [ -n "$TEMPS" ]; then
+            CMD="$CMD --temperatures $(echo $TEMPS | tr ',' ' ')"
+          fi
+          eval $CMD
 
       - name: Commit charts to repo
         run: |
@@ -72,11 +88,11 @@ jobs:
         run: |
           LIST="${{ inputs.list }}"
           PROVIDER="${{ inputs.provider || 'gemini' }}"
+          CMD="python run_notion.py --provider $PROVIDER --report-only"
           if [ -n "$LIST" ]; then
-            python run_notion.py --provider "$PROVIDER" --list "$LIST" --report-only
-          else
-            python run_notion.py --provider "$PROVIDER" --report-only
+            CMD="$CMD --list $LIST"
           fi
+          eval $CMD
 
       - name: Upload logs on failure
         if: failure()
